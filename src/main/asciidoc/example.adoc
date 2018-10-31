@@ -1,0 +1,526 @@
+ifndef::imagesdir[:imagesdir: images]
+:revnumber: {revnumber}
+:revdate: {docTimestamp}
+:experimental:
+:data-uri:
+:allow-uri-read:
+:description: Example template
+:source-highlighter: highlightjs
+:toc: right
+:toclevels: 5
+:icons: font
+:stem:
+:test-results: {snippetsdir}
+
+= Quelles solutions pour la mutualisation des BU ?
+
+== Rappel des objectifs
+
+* Trouver la meilleure solution pour mutualiser des BU (C'est à dire lancer 2 versions différentes de la même application pour 2 BU différentes)
+* Essayer éventuellement d'être moins dépendant à Rancher pour changer facilement d'orchestrateur de containers par la suite (Openshift)
+
+== Les notions à connaître
+
+* https://www.digitalocean.com/community/tutorials/the-docker-ecosystem-scheduling-and-orchestration[Orchestrateur de containers]
+* https://fr.wikipedia.org/wiki/Proxy_inverse[Reverse proxy] / https://fr.wikipedia.org/wiki/R%C3%A9partition_de_charge[Load-balancer]
+* Les solutions de reverse proxy / load-balancer https://traefik.io/[Traefik], https://github.com/fabiolb/fabio[Fabio], https://nginx.org/en/[Nginx] et http://www.haproxy.org/[HAProxy]
+* https://en.wikipedia.org/wiki/Service_discovery[Service discovery]
+* La solution de http://blog.soat.fr/2016/07/service-discovery-avec-consul/[service discovery de Consul]
+* La solution d'enregistrement de containers dans un service discovery https://gliderlabs.com/registrator/latest/[Registrator]
+* Les http://rancher.com/docs/rancher/v1.6/en/rancher-services/metadata-service/[metadata de Rancher] qui sont une alternative au service discovery
+
+== Mes choix de solutions
+
+=== Pour le reverse proxy / load-balancer
+
+J'ai choisi d'utiliser Nginx et Traefik. Ils disposent tous les deux d'une grosse communauté, d'une bonne documentation et de beaucoup de choses déjà configurées. Cependant, il est possible de remplacer Nginx par HAProxy et Traefik par Fabio
+
+Je n'ai pas fait de solutions avec Fabio car la communauté est assez petite par rapport aux autres solutions et la documentation  est moins riche qur les autres solutions. Je n'ai pas fait de solutions non plus avec HAProxy par gain de temps car Nginx présente des performances équivalentes. Cependant, il est tout à fait envisageable d'utiliser HAProxy comme solution.
+
+=== Pour le service discovery
+
+J'ai choisi d'utiliser la solution de Consul (Consul Catalog) étant donné que l'on utilise déjà leur solution de KV Data dans le SI.
+
+Il est également possible d'utiliser les metadata de Rancher à la place du service discovery. J'ai proposé la solution mais je ne la conseille pas pour être en adéquation avec nos objectifs (être moins dépendant de Rancher).
+
+=== Schéma récapitulatif des solutions misent en place
+
+image::schema_mutualisation_bu.png[schema]
+
+== Comparaison des solutions
+
+=== Pour le reverse proxy / load-balancer
+
+==== Traefik, la solution la plus facile à configurer
+
+.Traefik
+[width="100%",options="header"]
+|====================
+| [green]#Les plus# |  [red]#Les moins#
+| Supporte la plupart des orchestrateurs et services discovery | légèrement moins performant que Nginx
+| On peut configurer des API Rest en backend |
+| Se reconfigure automatiquement lorsqu'un container apparaît ou disparaît |
+| Health check intégré |
+| Load-balancing : Weight Round Robin, Dynamic Round Robin |
+| Des circuits breakers sur les backends |
+| Une solution complète : pas de multiplication des outils |
+| Une Interface Web de consultation |
+| Une communauté importante |
+| Très bonne documentation avec la plupart des configurations faites |
+|====================
+
+==== Nginx, la solution la plus performante
+
+.Nginx
+[width="100%",options="header"]
+|====================
+| [green]#Les plus# |  [red]#Les moins#
+| Solution la plus performante | pas d'interface graphique
+| Une communauté importante |
+| Documention complète |
+|====================
+
+=== Pour le service discovery / metadata
+
+==== Rancher, la solution la plus simple à mettre en place
+
+.Rancher-metadata
+[width="100%",options="header"]
+|====================
+| [green]#Les plus# |  [red]#Les moins#
+| Pas d'outils à configurer en plus | Dépendance plus importante à Rancher
+|  | Problème de connexion à Rancher Client avec les certificats auto-signés (problème avec Traefik)
+|====================
+
+==== Consul, la solution pour être moins dépendant de l'orchestrateur
+
+.Consul catalog
+[width="100%",options="header"]
+|====================
+| [green]#Les plus# |  [red]#Les moins#
+| Indépendant de l'orchestrateur de containers pour le catalogue de services | Augmentation du nombre d'outils
+| Bonne documentation | obligé de définir un port au niveau du docker-compose pour le registrator
+| Interface claire |
+| Solution souvent mise en place (beaucoup d'aides sur internet) |
+|====================
+
+== Mise en place des solutions
+
+[IMPORTANT]
+====
+Toutes les solutions ci-dessous sont mises en place dans la BU blanche de Sirius dans Rancher.
+====
+
+=== Traefik + Rancher metadata
+
+==== Mise en place de Traefik dans Rancher
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  traefik-conf:
+    image: registry.adeo.com/sirius/rancher-traefik:test
+    network_mode: none
+    volumes:
+    - /opt/tools
+    tty: true
+    labels:
+      io.rancher.container.start_once: 'true'
+      io.rancher.scheduler.affinity:container_label_ne: io.rancher.stack_service.name=$${stack_name}/$${service_name}
+      io.rancher.scheduler.global: 'true'
+  traefik:
+    image: registry.adeo.com/sirius/alpine-traefik:test
+    environment:
+      CONF_INTERVAL: ''
+      TRAEFIK_ACME_EMAIL: test@traefik.io
+      TRAEFIK_ACME_ENABLE: 'false'
+      TRAEFIK_ACME_ONDEMAND: 'true'
+      TRAEFIK_ACME_ONHOSTRULE: 'true'
+      TRAEFIK_HTTPS_ENABLE: 'false'
+      TRAEFIK_HTTPS_PORT: '8443'
+      TRAEFIK_HTTP_PORT: '8080'
+      TRAEFIK_INSECURE_SKIP: 'false'
+    tty: true
+    volumes_from:
+    - traefik-conf
+    ports:
+    - 8000:8000/tcp
+    - 8080:8080/tcp
+    - 8443:8443/tcp
+    labels:
+      io.rancher.container.agent.role: environmentAdmin
+      io.rancher.sidekicks: traefik-conf
+      io.rancher.container.hostname_override: container_name
+      io.rancher.scheduler.affinity:container_label_ne: io.rancher.stack_service.name=$${stack_name}/$${service_name}
+      io.rancher.scheduler.global: 'true'
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  traefik-conf:
+    retain_ip: true
+    start_on_create: true
+  traefik:
+    retain_ip: true
+    start_on_create: true
+    health_check:
+      healthy_threshold: 2
+      response_timeout: 5000
+      port: 8000
+      unhealthy_threshold: 3
+      interval: 5000
+      strategy: recreate
+      request_line: GET /dashboard/# HTTP/1.0
+----
+
+==== Mise en place de l'application de test Whoami
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  whoami:
+    image: registry.adeo.com/sirius/whoami:test
+    tty: true
+    labels:
+      traefik.port: '80'
+      traefik.domain: local
+      traefik.enable: 'true'
+      io.rancher.container.hostname_override: container_name
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  whoami:
+    scale: 3
+    start_on_create: true
+    health_check:
+      healthy_threshold: 2
+      response_timeout: 2000
+      port: 80
+      unhealthy_threshold: 3
+      initializing_timeout: 60000
+      interval: 2000
+      strategy: recreate
+      request_line: GET "/" "HTTP/1.0"
+----
+
+=== Nginx reverse proxy + Rancher metadata
+
+==== Mise en place de Nginx dans Rancher
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  Rancher-Active-Proxy:
+    image: registry.adeo.com/sirius/nginx-active-proxy:test
+    environment:
+      CRON: 0 2 * * *
+      DEBUG: 'false'
+      DEFAULT_EMAIL: toto@test-nginx.com
+      DEFAULT_HOST: test-nginx.com
+      DEFAULT_PORT: '80'
+    stdin_open: true
+    volumes:
+    - /data/rancher-active-proxy/htpasswd:/etc/nginx/htpasswd
+    - /data/rancher-active-proxy/vhost.d:/etc/nginx/vhost.d
+    - /data/rancher-active-proxy/letsencrypt:/etc/letsencrypt
+    tty: true
+    ports:
+    - 80:80/tcp
+    - 443:443/tcp
+    labels:
+      io.rancher.container.pull_image: always
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  Rancher-Active-Proxy:
+    scale: 1
+    start_on_create: true
+----
+
+==== Mise en place de l'application test Whoami
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  whoami:
+    image: registry.adeo.com/sirius/whoami:test
+    tty: true
+    expose:
+    - '80'
+    labels:
+      io.rancher.container.hostname_override: container_name
+      rap.host: subdomain.youdomain.com
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  whoami:
+    scale: 3
+    start_on_create: true
+----
+
+Quelques commandes :
+
+* pour l'application de test : `curl -H 'Host:whoami-tr-meta.whoami-traefik-rancher-metadata-test.local' '10.11.165.88:8080'`
+
+=== Consul catalog + Registrator
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  registrator:
+    image: registry.adeo.com/sirius/rancher-registrator:test
+    environment:
+      LOCAL_CONSUL_AGENT: http://localhost:48500
+    network_mode: host
+    volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    tty: true
+    labels:
+      io.rancher.container.dns: 'true'
+      io.rancher.container.hostname_override: container_name
+      io.rancher.container.pull_image: always
+      io.rancher.scheduler.global: 'true'
+      io.rancher.container.network: 'false'
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  registrator:
+    start_on_create: true
+----
+
+Quelques commandes :
+
+* Pour obtenir la liste des services : `curl <CONSUL_IP>:<PORT>/v1/catalog/services | jq` +
+  Pour l'exemple de test : `curl 10.11.165.89:48500/v1/catalog/services | jq`
+* Pour obtenir les informations sur un service : `curl <CONSUL_IP>:<PORT>/v1/catalog/service/<NOM_APP> | jq` +
+  Pour l'exemple de test : `curl 10.11.165.89:48500/v1/catalog/service/whoami | jq`
+
+=== Traefik + Consul catalog
+
+.Dockerfile
+[source,docker]
+----
+FROM alpine:3.4
+
+RUN apk --update upgrade \
+    && apk --no-cache --no-progress add ca-certificates \
+    && rm -rf /var/cache/apk/*
+
+COPY traefik /usr/local/bin/
+COPY entrypoint.sh /
+RUN mkdir /home/traefik
+COPY traefik.toml /home/traefik
+
+EXPOSE 80 8080
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["-c","/home/traefik/traefik.toml"]
+
+# Metadata
+LABEL org.label-schema.vendor="Containous" \
+      org.label-schema.url="https://traefik.io" \
+      org.label-schema.name="Traefik" \
+      org.label-schema.description="A modern reverse-proxy" \
+      org.label-schema.version="$VERSION" \
+      org.label-schema.docker.schema-version="1.0"
+----
+
+.entrypoint.sh
+[source,sh]
+----
+#!/bin/sh
+set -e
+
+# first arg is `-f` or `--some-option`
+if [ "${1#-}" != "$1" ]; then
+    set -- traefik "$@"
+fi
+
+# if our command is a valid Traefik subcommand, let's invoke it through Traefik instead
+# (this allows for "docker run traefik version", etc)
+if traefik "$1" --help 2>&1 >/dev/null | grep "help requested" > /dev/null 2>&1; then
+    set -- traefik "$@"
+fi
+
+exec "$@"
+----
+
+.traefik.toml
+[source,toml]
+----
+# Traefik web ui port
+#
+# Optional
+#
+[web]
+address = ":8080"
+
+[consulCatalog]
+
+# Consul server endpoint
+#
+# Required
+#
+endpoint = "10.11.165.89:48500"
+
+# Default domain used.
+#
+# Optional
+#
+domain = "test-adeo.com"
+
+# Prefix for Consul catalog tags
+#
+# Optional
+#
+prefix = "traefik"
+----
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  traefik-consul-catalog:
+    image: registry.adeo.com/sirius/traefik-consul-catalog:test
+    ports:
+        - 580:80/tcp
+        - 58080:8080/tcp
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  traefik-consul-catalog:
+    scale: 1
+    start_on_create: true
+----
+
+Quelques commandes :
+
+* Pour obtenir les informations sur un service : curl -H 'Host:<HOST_NAME>' '<TRAEFIK_IP>:<TRAEFIK_SERVER_PORT>' +
+  Pour l'exemple de test : `curl -H 'Host:whoami.test-adeo.com' '10.11.165.88:580'`
+
+=== Nginx reverse proxy + Consul-template + Consul catalog
+
+.Dockerfile
+[source,docker]
+----
+FROM nginx:latest
+
+ENV CONSUL_URL consul:8500
+
+RUN apt-get update && apt-get install -y unzip wget
+RUN mkdir -p /opt/consul-template
+WORKDIR /opt/consul-template
+
+RUN wget https://releases.hashicorp.com/consul-template/0.19.0/consul-template_0.19.0_linux_amd64.zip && unzip consul-template_0.19.0_linux_amd64.zip
+ADD default.ctmpl /opt/consul-template/
+ADD startup.sh /opt/consul-template/
+RUN chmod +777 /opt/consul-template/startup.sh
+RUN rm /etc/nginx/conf.d/default.conf
+RUN rm /opt/consul-template/consul-template_0.19.0_linux_amd64.zip
+
+EXPOSE 80
+
+ENTRYPOINT ["/opt/consul-template/startup.sh"]
+----
+
+.startup.sh
+[source,sh]
+----
+#!/bin/bash
+service nginx start && /opt/consul-template/consul-template -consul-addr=$CONSUL_URL -template="default.ctmpl:/etc/nginx/conf.d/default.conf:service nginx reload"
+----
+
+.docker-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  nginx-consul-template:
+    image: registry.adeo.com/sirius/nginx-consul-template:latest
+    environment:
+      CONSUL_URL: 10.11.165.89:48500
+    external_links:
+    - consul-test/consul:consul
+    ports:
+    - 8900:80/tcp
+----
+
+.rancher-compose.yml
+[source,yaml]
+----
+version: '2'
+services:
+  nginx-consul-template:
+    scale: 1
+    start_on_create: true
+----
+
+Quelques commandes :
+
+* Pour obtenir les informations sur un service : `curl <NGINX_IP>:<PORT>/<CONSUL_SERVICE_NAME>` +
+  Pour l'exemple de test : `curl http://10.11.165.90:8900/whoami`
+
+== Mon avis
+
+Pour la solution de service discovery, si on veut être totalement indépendant de l'orchestrateur, la meilleure solution est d'utiliser Consul Catalog avec le Registrator.
+
+Pour la solution de reverse proxy, si la priorité c'est d'avoir les meilleures performances possible, il faut choisir du Nginx. Sinon si on veut un compromis entre simplicité de configuration, interface graphique et performances, c'est Traefik la solution.
+
+== Les sources
+
+* Benchmark :
+** https://docs.traefik.io/benchmarks/
+** https://github.com/observing/balancerbattle
+
+* Traefik + Rancher :
+** http://blog.soat.fr/2016/04/devoxx-2016-traefik-un-reverse-proxy-pour-les-architectures-modernes
+** http://rancher.com/traefik-active-load-balancer-on-rancher
+** https://github.com/rawmind0/alpine-traefik
+** https://github.com/rawmind0/rancher-traefik
+
+* Nginx + Rancher :
+** https://github.com/adi90x/rancher-active-proxy
+
+* Consul + Registrator :
+** https://github.com/cabrinoob/rancher-registrator
+** https://blog.osones.com/discovery-service-avec-consul.html
+
+* Nginx + Consul :
+** https://play.google.com/store/books/details/Vikram_Murugesan_Microservices_Deployment_Cookbook?id=A1AoDwAAQBAJ
+
+* Traefik + Consul :
+** https://github.com/containous/traefik-library-image
