@@ -1,14 +1,14 @@
-## Prerequis
+# Asciidoctor-pretty-theme
 
-- avoir maven d'installer sur son poste
+## Prerequisites
 
-## Arborescence
+You need to install *maven* in local
 
-- Mettre les fichiers adoc dans le répertoire src/main/asciidoc
-- Mettre les images dans le répertoire src/main/asciidoc/images
+## Project structure
 
-## Build
+- Put the *adoc files* in the repository `src/main/asciidoc`
+- Put the *image files* in the repositiry `src/main/asciidoc/images`
 
-- lancer la commande `mvn clean install` à la racine du projet
+## To generate the document from the adoc file
 
-## 
+- run the command `mvn clean install` at the root of the project
